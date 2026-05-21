@@ -3,20 +3,24 @@ plugins {
     alias(libs.plugins.jetbrains.kotlin.android)
 }
 
+val llamaAndroidAbis = providers.gradleProperty("llama.android.abis")
+    .map { abis -> abis.split(',').map { it.trim() }.filter { it.isNotEmpty() } }
+    .getOrElse(listOf("arm64-v8a"))
+
 android {
     namespace = "com.arm.aichat"
     compileSdk = 36
 
-    ndkVersion = "29.0.13113456"
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        minSdk = 33
+        minSdk = 29
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
 
         ndk {
-             abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += llamaAndroidAbis
         }
         externalNativeBuild {
             cmake {

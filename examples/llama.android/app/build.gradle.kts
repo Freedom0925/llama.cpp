@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.example.llama.aichat"
 
-        minSdk = 33
+        minSdk = 29
         targetSdk = 36
 
         versionCode = 1
