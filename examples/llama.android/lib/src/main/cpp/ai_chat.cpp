@@ -31,7 +31,10 @@ constexpr int   N_THREADS_HEADROOM      = 2;
 constexpr int   DEFAULT_CONTEXT_SIZE    = 8192;
 constexpr int   OVERFLOW_HEADROOM       = 4;
 constexpr int   BATCH_SIZE              = 512;
-constexpr float DEFAULT_SAMPLER_TEMP    = 0.3f;
+constexpr int32_t DEFAULT_SAMPLER_TOP_K = 20;
+constexpr float DEFAULT_SAMPLER_TOP_P = 0.6f;
+constexpr float DEFAULT_SAMPLER_TEMP = 0.7f;
+constexpr float DEFAULT_SAMPLER_REPEAT_PENALTY = 1.05f;
 
 static llama_model                      * g_model;
 static llama_context                    * g_context;
@@ -104,9 +107,12 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
     return context;
 }
 
-static common_sampler *new_sampler(float temp) {
+static common_sampler *new_sampler() {
     common_params_sampling sparams;
-    sparams.temp = temp;
+    sparams.top_k = DEFAULT_SAMPLER_TOP_K;
+    sparams.top_p = DEFAULT_SAMPLER_TOP_P;
+    sparams.temp = DEFAULT_SAMPLER_TEMP;
+    sparams.penalty_repeat = DEFAULT_SAMPLER_REPEAT_PENALTY;
     return common_sampler_init(g_model, sparams);
 }
 
@@ -118,7 +124,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_prepare(JNIEnv * /*env*/, jobje
     g_context = context;
     g_batch = llama_batch_init(BATCH_SIZE, 0, 1);
     g_chat_templates = common_chat_templates_init(g_model, "");
-    g_sampler = new_sampler(DEFAULT_SAMPLER_TEMP);
+    g_sampler = new_sampler();
     return 0;
 }
 
@@ -291,7 +297,7 @@ static std::string chat_add_and_format(const std::string &role, const std::strin
     new_msg.role = role;
     new_msg.content = content;
     auto formatted = common_chat_format_single(
-            g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ false);
+            g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ true);
     chat_msgs.push_back(new_msg);
     LOGi("%s: Formatted and added %s message: \n%s\n", __func__, role.c_str(), formatted.c_str());
     return formatted;
