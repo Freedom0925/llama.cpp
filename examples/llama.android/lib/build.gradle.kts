@@ -7,16 +7,16 @@ android {
     namespace = "com.arm.aichat"
     compileSdk = 36
 
-    ndkVersion = "29.0.13113456"
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        minSdk = 33
+        minSdk = 29
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
 
         ndk {
-             abiFilters += listOf("arm64-v8a", "x86_64")
+             abiFilters += listOf("arm64-v8a")
         }
         externalNativeBuild {
             cmake {
@@ -41,7 +41,7 @@ android {
     externalNativeBuild {
         cmake {
             path("src/main/cpp/CMakeLists.txt")
-            version = "3.31.6"
+            version = "3.22.1"
         }
     }
     compileOptions {
