@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <cmath>
 #include <string>
+#include <dlfcn.h>
 #include <unistd.h>
 #include <sampling.h>
 
@@ -31,10 +32,10 @@ constexpr int   N_THREADS_HEADROOM      = 2;
 constexpr int   DEFAULT_CONTEXT_SIZE    = 8192;
 constexpr int   OVERFLOW_HEADROOM       = 4;
 constexpr int   BATCH_SIZE              = 512;
-constexpr int32_t DEFAULT_SAMPLER_TOP_K = 20;
-constexpr float DEFAULT_SAMPLER_TOP_P = 0.6f;
-constexpr float DEFAULT_SAMPLER_TEMP = 0.7f;
-constexpr float DEFAULT_SAMPLER_REPEAT_PENALTY = 1.05f;
+constexpr int32_t DEFAULT_SAMPLER_TOP_K = 40;
+constexpr float DEFAULT_SAMPLER_TOP_P = 0.95f;
+constexpr float DEFAULT_SAMPLER_TEMP = 0.8f;
+constexpr float DEFAULT_SAMPLER_REPEAT_PENALTY = 1.0f;
 
 static llama_model                      * g_model;
 static llama_context                    * g_context;
@@ -42,17 +43,78 @@ static llama_batch                        g_batch;
 static common_chat_templates_ptr          g_chat_templates;
 static common_sampler                   * g_sampler;
 
+static int get_android_backend_score(const char *library) {
+#if defined(__ANDROID__)
+    void *handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr) {
+        LOGd("Cannot inspect ggml backend %s: %s", library, dlerror());
+        return 0;
+    }
+
+    using ggml_backend_score_fn = int (*)();
+    auto score_fn = reinterpret_cast<ggml_backend_score_fn>(dlsym(handle, "ggml_backend_score"));
+    if (score_fn == nullptr) {
+        LOGd("Cannot inspect ggml backend %s: missing ggml_backend_score", library);
+        dlclose(handle);
+        return 0;
+    }
+
+    const int score = score_fn();
+    dlclose(handle);
+    return score;
+#else
+    (void) library;
+    return 0;
+#endif
+}
+
+static void load_android_cpu_backends() {
+#if defined(__ANDROID__)
+    // Android no longer guarantees that native libraries are extracted to a filesystem
+    // directory. Loading by library basename lets the platform linker resolve .so files
+    // packaged in the APK/AAR. Keep the previous nativeLibraryDir scan behavior:
+    // score every CPU variant with ggml_backend_score(), then load only the best one.
+    constexpr const char *backend_libraries[] = {
+            "libggml-cpu-android_armv9.2_2.so",
+            "libggml-cpu-android_armv9.2_1.so",
+            "libggml-cpu-android_armv9.0_1.so",
+            "libggml-cpu-android_armv8.6_1.so",
+            "libggml-cpu-android_armv8.2_2.so",
+            "libggml-cpu-android_armv8.2_1.so",
+            "libggml-cpu-android_armv8.0_1.so",
+    };
+
+    const char *best_library = nullptr;
+    int best_score = 0;
+    for (const char *library : backend_libraries) {
+        const int score = get_android_backend_score(library);
+        LOGd("Scored ggml backend %s: %d", library, score);
+        if (score > best_score) {
+            best_score = score;
+            best_library = library;
+        }
+    }
+
+    if (best_library == nullptr) {
+        LOGe("No supported Android ggml CPU backend variant found");
+        return;
+    }
+
+    if (ggml_backend_load(best_library) != nullptr) {
+        LOGi("Loaded best ggml backend: %s (score=%d)", best_library, best_score);
+    } else {
+        LOGe("Failed to load best ggml backend: %s (score=%d)", best_library, best_score);
+    }
+#endif
+}
+
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unused*/, jstring nativeLibDir) {
+Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv * /*env*/, jobject /*unused*/) {
     // Set llama log handler to Android
     llama_log_set(aichat_android_log_callback, nullptr);
 
-    // Loading all CPU backend variants
-    const auto *path_to_backend = env->GetStringUTFChars(nativeLibDir, 0);
-    LOGi("Loading backends from %s", path_to_backend);
-    ggml_backend_load_all_from_path(path_to_backend);
-    env->ReleaseStringUTFChars(nativeLibDir, path_to_backend);
+    load_android_cpu_backends();
 
     // Initialize backends
     llama_backend_init();
@@ -107,13 +169,30 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
     return context;
 }
 
-static common_sampler *new_sampler() {
+static common_sampler *new_sampler(
+        int32_t top_k = DEFAULT_SAMPLER_TOP_K,
+        float top_p = DEFAULT_SAMPLER_TOP_P,
+        float temp = DEFAULT_SAMPLER_TEMP,
+        float penalty_repeat = DEFAULT_SAMPLER_REPEAT_PENALTY
+) {
     common_params_sampling sparams;
-    sparams.top_k = DEFAULT_SAMPLER_TOP_K;
-    sparams.top_p = DEFAULT_SAMPLER_TOP_P;
-    sparams.temp = DEFAULT_SAMPLER_TEMP;
-    sparams.penalty_repeat = DEFAULT_SAMPLER_REPEAT_PENALTY;
+    sparams.top_k = top_k;
+    sparams.top_p = top_p;
+    sparams.temp = temp;
+    sparams.penalty_repeat = penalty_repeat;
     return common_sampler_init(g_model, sparams);
+}
+
+static void reset_sampler(
+        int32_t top_k,
+        float top_p,
+        float temp,
+        float penalty_repeat
+) {
+    if (g_sampler != nullptr) {
+        common_sampler_free(g_sampler);
+    }
+    g_sampler = new_sampler(top_k, top_p, temp, penalty_repeat);
 }
 
 extern "C"
@@ -411,10 +490,15 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
         JNIEnv *env,
         jobject /*unused*/,
         jstring juser_prompt,
-        jint n_predict
+        jint n_predict,
+        jint top_k,
+        jfloat top_p,
+        jfloat temperature,
+        jfloat repeat_penalty
 ) {
     // Reset short-term states
     reset_short_term_states();
+    reset_sampler(top_k, top_p, temperature, repeat_penalty);
 
     // Obtain and tokenize user prompt
     const auto *const user_prompt = env->GetStringUTFChars(juser_prompt, nullptr);
@@ -557,7 +641,10 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_unload(JNIEnv * /*unused*/, job
     reset_short_term_states();
 
     // Free up resources
-    common_sampler_free(g_sampler);
+    if (g_sampler != nullptr) {
+        common_sampler_free(g_sampler);
+        g_sampler = nullptr;
+    }
     g_chat_templates.reset();
     llama_batch_free(g_batch);
     llama_free(g_context);

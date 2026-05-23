@@ -43,9 +43,7 @@ import java.io.IOException
  *
  * @see ai_chat.cpp for the native implementation details
  */
-internal class InferenceEngineImpl private constructor(
-    private val nativeLibDir: String
-) : InferenceEngine {
+internal class InferenceEngineImpl private constructor() : InferenceEngine {
 
     companion object {
         private val TAG = InferenceEngineImpl::class.java.simpleName
@@ -62,14 +60,11 @@ internal class InferenceEngineImpl private constructor(
          */
         internal fun getInstance(context: Context) =
             instance ?: synchronized(this) {
-                val nativeLibDir = context.applicationInfo.nativeLibraryDir
-                require(nativeLibDir.isNotBlank()) { "Expected a valid native library path!" }
-
                 try {
                     Log.i(TAG, "Instantiating InferenceEngineImpl,,,")
-                    InferenceEngineImpl(nativeLibDir).also { instance = it }
+                    InferenceEngineImpl().also { instance = it }
                 } catch (e: UnsatisfiedLinkError) {
-                    Log.e(TAG, "Failed to load native library from $nativeLibDir", e)
+                    Log.e(TAG, "Failed to load native library", e)
                     throw e
                 }
             }
@@ -80,7 +75,7 @@ internal class InferenceEngineImpl private constructor(
      * @see ai_chat.cpp
      */
     @FastNative
-    private external fun init(nativeLibDir: String)
+    private external fun init()
 
     @FastNative
     private external fun load(modelPath: String): Int
@@ -98,7 +93,14 @@ internal class InferenceEngineImpl private constructor(
     private external fun processSystemPrompt(systemPrompt: String): Int
 
     @FastNative
-    private external fun processUserPrompt(userPrompt: String, predictLength: Int): Int
+    private external fun processUserPrompt(
+        userPrompt: String,
+        predictLength: Int,
+        topK: Int,
+        topP: Float,
+        temperature: Float,
+        repeatPenalty: Float,
+    ): Int
 
     @FastNative
     private external fun generateNextToken(): String?
@@ -133,7 +135,7 @@ internal class InferenceEngineImpl private constructor(
                 _state.value = InferenceEngine.State.Initializing
                 Log.i(TAG, "Loading native library...")
                 System.loadLibrary("ai-chat")
-                init(nativeLibDir)
+                init()
                 _state.value = InferenceEngine.State.Initialized
                 Log.i(TAG, "Native library loaded! System info: \n${systemInfo()}")
 
@@ -217,6 +219,10 @@ internal class InferenceEngineImpl private constructor(
     override fun sendUserPrompt(
         message: String,
         predictLength: Int,
+        topK: Int,
+        topP: Float,
+        temperature: Float,
+        repeatPenalty: Float,
     ): Flow<String> = flow {
         require(message.isNotEmpty()) { "User prompt discarded due to being empty!" }
         check(_state.value is InferenceEngine.State.ModelReady) {
@@ -228,7 +234,14 @@ internal class InferenceEngineImpl private constructor(
             _readyForSystemPrompt = false
             _state.value = InferenceEngine.State.ProcessingUserPrompt
 
-            processUserPrompt(message, predictLength).let { result ->
+            processUserPrompt(
+                userPrompt = message,
+                predictLength = predictLength,
+                topK = topK,
+                topP = topP,
+                temperature = temperature,
+                repeatPenalty = repeatPenalty,
+            ).let { result ->
                 if (result != 0) {
                     Log.e(TAG, "Failed to process user prompt: $result")
                     return@flow

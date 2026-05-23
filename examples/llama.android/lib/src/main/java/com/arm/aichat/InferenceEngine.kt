@@ -28,7 +28,14 @@ interface InferenceEngine {
     /**
      * Sends a user prompt to the loaded model and returns a Flow of generated tokens.
      */
-    fun sendUserPrompt(message: String, predictLength: Int = DEFAULT_PREDICT_LENGTH): Flow<String>
+    fun sendUserPrompt(
+        message: String,
+        predictLength: Int = DEFAULT_PREDICT_LENGTH,
+        topK: Int = DEFAULT_TOP_K,
+        topP: Float = DEFAULT_TOP_P,
+        temperature: Float = DEFAULT_TEMPERATURE,
+        repeatPenalty: Float = DEFAULT_REPEAT_PENALTY,
+    ): Flow<String>
 
     /**
      * Runs a benchmark with the specified parameters.
@@ -68,6 +75,10 @@ interface InferenceEngine {
 
     companion object {
         const val DEFAULT_PREDICT_LENGTH = 1024
+        const val DEFAULT_TOP_K = 40
+        const val DEFAULT_TOP_P = 0.95f
+        const val DEFAULT_TEMPERATURE = 0.8f
+        const val DEFAULT_REPEAT_PENALTY = 1.0f
     }
 }
 
